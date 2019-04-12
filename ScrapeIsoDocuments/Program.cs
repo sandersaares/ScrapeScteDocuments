@@ -19,7 +19,7 @@ namespace ScrapeIsoDocuments
             // NB! Make sure the filter in the URL incldues withdrawn/deleted documents!
             // We just mark them as such, we do not delete from references (because legacy).
 
-            // IUSO/IEC JTC 1/SC 29 Coding of audio, picture, multimedia and hypermedia information
+            // ISO/IEC JTC 1/SC 29 Coding of audio, picture, multimedia and hypermedia information
             ("iso_jtc1_sc29.json", "https://www.iso.org/committee/45316/x/catalogue/p/1/u/1/w/1/d/1")
         };
 
