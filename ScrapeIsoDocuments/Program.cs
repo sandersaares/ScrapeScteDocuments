@@ -216,6 +216,7 @@ namespace ScrapeIsoDocuments
                         else if (underDevelopment || withdrawn || deleted)
                         {
                             Console.WriteLine($"Skipping {id} because we already have a more preferred version.");
+                            continue;
                         }
                         else
                         {
