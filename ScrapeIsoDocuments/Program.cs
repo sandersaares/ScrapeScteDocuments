@@ -149,6 +149,8 @@ namespace ScrapeIsoDocuments
                 Directory.Delete(OutputDirectory, true);
             Directory.CreateDirectory(OutputDirectory);
 
+            Console.WriteLine("Output will be saved in " + Path.GetFullPath(OutputDirectory));
+
             var client = new HttpClient();
 
             foreach ((var outfile, var pageUrl) in CatalogPagesToScrape)
