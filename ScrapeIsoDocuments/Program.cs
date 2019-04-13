@@ -12,6 +12,12 @@ namespace ScrapeIsoDocuments
 {
     internal class Program
     {
+        /// <summary>
+        /// All .json files will be placed in this subdirectory of the working directory.
+        /// The directory will be cleaned on start.
+        /// </summary>
+        public const string OutputDirectory = "SpecRef";
+
         // Explicit listing because the naming is reverse engineered and oddball entries are sure to exist.
         // Review each catalog page manually before adding, in case parsing rules need to be adjusted.
         public static (string outfile, string url)[] CatalogPagesToScrape = new[]
@@ -39,12 +45,11 @@ namespace ScrapeIsoDocuments
             public string IsoNumber { get; set; }
         }
 
-        // Extract base ID from regular documents. Will need further postprocessing.
         // We just want the first 12345-56 looking string, that's it. There may be a year suffix, which we ignore.
-        private static readonly Regex ExtractBaseIdRegex = new Regex(@"([\d-]+)");
+        private static readonly Regex ExtractBaseIdRegex = new Regex(@"([\d-]+)", RegexOptions.Compiled);
 
         // We just want the first 12345-56:7890 looking string, that's it.
-        private static readonly Regex ExtractIsoNumber = new Regex(@"([\d-]+:[\d-]+)");
+        private static readonly Regex ExtractIsoNumber = new Regex(@"([\d-]+:[\d-]+)", RegexOptions.Compiled);
 
         public static string TrimIsoPrefix(string title)
         {
@@ -140,6 +145,10 @@ namespace ScrapeIsoDocuments
             // ISO/IEC 21000-22:2016/Amd 1:2018
             // This becomes "iso21000-22-2016-amd1-2018" in SpecRef.
 
+            if (Directory.Exists(OutputDirectory))
+                Directory.Delete(OutputDirectory, true);
+            Directory.CreateDirectory(OutputDirectory);
+
             var client = new HttpClient();
 
             foreach ((var outfile, var pageUrl) in CatalogPagesToScrape)
@@ -168,6 +177,9 @@ namespace ScrapeIsoDocuments
                         .Replace("\n", "")
                         .Replace("\r", "")
                         .Trim();
+
+                    if (summary?.Length <= 3)
+                        summary = null; // Sometimes the ISO website just has some punctuation there - ignore.
 
                     if (title == null || relativeUrl == null)
                         throw new Exception("Unable to parse document entry: " + document.InnerHtml);
@@ -205,7 +217,7 @@ namespace ScrapeIsoDocuments
 
                     var id = MakeId(title);
 
-                    Console.WriteLine($"{title} [{status}] talks about {summary} and can be found at {absoluteUrl} and will get the ID {id}");
+                    Console.WriteLine($"{title} [{status}] is titled \"{summary}\" and can be found at {absoluteUrl} and will get the ID {id}");
 
                     if (entries.ContainsKey(id))
                     {
@@ -233,7 +245,7 @@ namespace ScrapeIsoDocuments
                         IsRetired = deleted,
                         IsUnderDevelopment = underDevelopment,
                         Status = status,
-                        Title = summary ?? title, // Summary is optional but we need a title.
+                        Title = summary ?? title, // Summary is optional on ISO website but we need something.
                         IsoNumber = isoNumber,
                         Url = absoluteUrl.ToString(),
                     };
@@ -261,7 +273,8 @@ namespace ScrapeIsoDocuments
                     };
                 }
 
-                File.WriteAllText(outfile, JsonConvert.SerializeObject(json, JsonSettings), OutputEncoding);
+                var outputFilePath = Path.Combine(OutputDirectory, outfile);
+                File.WriteAllText(outputFilePath, JsonConvert.SerializeObject(json, JsonSettings), OutputEncoding);
             }
         }
 
