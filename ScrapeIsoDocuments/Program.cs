@@ -151,7 +151,11 @@ namespace ScrapeIsoDocuments
 
             Console.WriteLine("Output will be saved in " + Path.GetFullPath(OutputDirectory));
 
-            var client = new HttpClient();
+            var client = new HttpClient
+            {
+                // The ISO website can be quite slow.
+                Timeout = TimeSpan.FromSeconds(300)
+            };
 
             foreach ((var outfile, var pageUrl) in CatalogPagesToScrape)
             {
