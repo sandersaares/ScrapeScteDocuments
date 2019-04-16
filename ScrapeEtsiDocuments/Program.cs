@@ -206,7 +206,7 @@ namespace ScrapeEtsiDocuments
                     href = pair.Value.Url,
                     title = pair.Value.Title,
                     status = pair.Value.Status,
-                    publisher = "ETSI",
+                    publisher = "European Telecommunications Standards Insitute",
                     isRetired = pair.Value.IsRetired,
                     rawDate = pair.Value.RawDate
                 };
