@@ -1,5 +1,7 @@
 ﻿using HtmlAgilityPack;
 using Newtonsoft.Json;
+using Polly;
+using Polly.Retry;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -28,6 +30,9 @@ namespace ScrapeIsoDocuments
             // ISO/IEC JTC 1/SC 29 Coding of audio, picture, multimedia and hypermedia information
             ("iso_jtc1_sc29.json", "https://www.iso.org/committee/45316/x/catalogue/p/1/u/1/w/1/d/1")
         };
+
+        // The ISO website tends to fail a lot. Just retry.
+        private static RetryPolicy<string> ScrapePolicy = Policy<string>.Handle<Exception>().Retry(5);
 
         private sealed class Entry
         {
@@ -190,7 +195,9 @@ namespace ScrapeIsoDocuments
                 var page = new HtmlDocument();
 
                 Console.WriteLine($"Loading catalog page: {pageUrl}");
-                page.LoadHtml(client.GetStringAsync(pageUrl).Result);
+
+                var pageHtml = ScrapePolicy.Execute(() => client.GetStringAsync(pageUrl).Result);
+                page.LoadHtml(pageHtml);
 
                 var dataTable = page.GetElementbyId("datatable-tc-projects");
                 var documents = dataTable.SelectNodes("tbody/tr/td[1]");
