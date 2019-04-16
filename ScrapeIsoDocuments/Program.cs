@@ -31,6 +31,14 @@ namespace ScrapeIsoDocuments
 
         private sealed class Entry
         {
+            // Used for cross-referencing purposes.
+            // For regular documents, this is the document itself (e.g. 12345-6).
+            // For addon documents, this is the base ID of the parent document.
+            // Some documents might not have base ID at all! (Some could have unusual ID structure)
+            public string BaseId { get; set; }
+
+            public bool IsAddonDocument { get; set; }
+
             public int SortIndex { get; set; }
 
             public string Url { get; set; }
@@ -43,6 +51,9 @@ namespace ScrapeIsoDocuments
 
             // May be null.
             public string IsoNumber { get; set; }
+
+            // The ID of the entry that has caused this entry to be superseded/retired (if we can determine it).
+            public string ObsoletedBy { get; set; }
         }
 
         // We just want the first 12345-56 looking string, that's it. There may be a year suffix, which we ignore.
@@ -61,12 +72,19 @@ namespace ScrapeIsoDocuments
                 return title;
         }
 
-        public static string MakeIsoNumber(string title)
+        public static bool DetermineIsAddonDocument(string title)
         {
             title = TrimIsoPrefix(title);
 
-            if (title.Contains('/'))
+            return title.Contains('/');
+        }
+
+        public static string MakeIsoNumber(string title, bool isAddonDocument)
+        {
+            if (isAddonDocument)
                 return null; // Addons do not have ISO numbers.
+
+            title = TrimIsoPrefix(title);
 
             if (!title.Contains(":"))
                 return null; // No year, no ISO number.
@@ -79,11 +97,11 @@ namespace ScrapeIsoDocuments
             return "ISO " + isoNumber.Captures[0].Value;
         }
 
-        public static string MakeId(string title)
+        public static (string baseId, string specrefId) MakeIds(string title, bool isAddonDocument)
         {
             title = TrimIsoPrefix(title);
 
-            if (!title.Contains('/'))
+            if (!isAddonDocument)
             {
                 // It is a regular title.
 
@@ -95,7 +113,9 @@ namespace ScrapeIsoDocuments
                 if (!baseId.Success)
                     throw new Exception("Failed to parse ID from title: " + title);
 
-                return "iso" + baseId.Captures[0].Value;
+                var baseIdValue = baseId.Captures[0].Value;
+
+                return (baseIdValue, "iso" + baseIdValue);
             }
             else
             {
@@ -110,13 +130,16 @@ namespace ScrapeIsoDocuments
                 if (!baseId.Success)
                     throw new Exception("Failed to parse ID from title: " + title);
 
-                var id = title.Substring(baseId.Captures[0].Index)
+                var baseIdValue = baseId.Captures[0].Value;
+                var baseIdStart = baseId.Captures[0].Index;
+
+                var id = title.Substring(baseIdStart)
                     .ToLowerInvariant()
                     .Replace(" ", "")
                     .Replace(":", "-")
                     .Replace("/", "-");
 
-                return "iso" + id;
+                return (baseIdValue, "iso" + id);
             }
         }
 
@@ -192,7 +215,9 @@ namespace ScrapeIsoDocuments
 
                     var absoluteUrl = new Uri(new Uri(pageUrl), relativeUrl);
 
-                    var isoNumber = MakeIsoNumber(title);
+                    var isAddon = DetermineIsAddonDocument(title);
+                    (var baseId, var id) = MakeIds(title, isAddon);
+                    var isoNumber = MakeIsoNumber(title, isAddon);
 
                     var label = document.SelectSingleNode("div/div/span[contains(@class, 'small')]");
 
@@ -221,8 +246,6 @@ namespace ScrapeIsoDocuments
                             throw new Exception("Unexpected label: " + label.InnerText);
                     }
 
-                    var id = MakeId(title);
-
                     Console.WriteLine($"{title} [{status}] is titled \"{summary}\" and can be found at {absoluteUrl} and will get the ID {id}");
 
                     if (entries.ContainsKey(id))
@@ -247,6 +270,9 @@ namespace ScrapeIsoDocuments
                         // We use the same sorting as on the ISO website.
                         SortIndex = documentIndex++,
 
+                        IsAddonDocument = isAddon,
+                        BaseId = baseId,
+
                         IsSuperseded = withdrawn, // Maybe not always accurate translation but what can you do.
                         IsRetired = deleted,
                         IsUnderDevelopment = underDevelopment,
@@ -262,11 +288,34 @@ namespace ScrapeIsoDocuments
                 if (entries.Count == 0)
                     throw new Exception("Loaded no entries."); // Sanity check.
 
+                // Try cross-reference entries so that superseded documents reference the new ones.
+                var publishedDocuments = entries.Where(pair => !pair.Value.IsSuperseded && !pair.Value.IsUnderDevelopment && !pair.Value.IsRetired);
+                var notPublishedDocuments = entries.Except(publishedDocuments);
+
+                foreach (var obsolete in notPublishedDocuments)
+                {
+                    // If we can find a valid non-addon document with the same BaseID, we reference it as the fresh version.
+                    var newAndImproved = publishedDocuments.Where(pair => pair.Value.BaseId == obsolete.Value.BaseId && !pair.Value.IsAddonDocument).ToArray();
+
+                    if (newAndImproved.Length > 1)
+                        throw new Exception($"Found multiple new versions of {obsolete.Key}: {string.Join(", ", newAndImproved.Select(pair => pair.Key))}");
+
+                    if (newAndImproved.Length == 0)
+                        continue;
+
+                    obsolete.Value.ObsoletedBy = newAndImproved.Single().Key;
+                    Console.WriteLine($"Marking as obsoleted: {obsolete.Key} -> {obsolete.Value.ObsoletedBy}");
+                }
+
                 // Ok, we got all our entries. Serialize.
                 var json = new Dictionary<string, object>(entries.Count);
 
                 foreach (var pair in entries.OrderBy(p => p.Value.SortIndex))
                 {
+                    string[] obsoletedBy = null;
+                    if (pair.Value.ObsoletedBy != null)
+                        obsoletedBy = new[] { pair.Value.ObsoletedBy };
+
                     json[pair.Key] = new
                     {
                         href = pair.Value.Url,
@@ -275,7 +324,8 @@ namespace ScrapeIsoDocuments
                         publisher = "ISO/IEC",
                         isoNumber = pair.Value.IsoNumber,
                         isSuperseded = pair.Value.IsSuperseded,
-                        isRetired = pair.Value.IsRetired
+                        isRetired = pair.Value.IsRetired,
+                        obsoletedBy = obsoletedBy
                     };
                 }
 
