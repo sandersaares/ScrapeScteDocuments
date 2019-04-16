@@ -168,6 +168,9 @@ namespace ScrapeIsoDocuments
             // ISO/IEC 21000-22:2016/Amd 1:2018
             // This becomes "iso21000-22-2016-amd1-2018" in SpecRef.
 
+            // We could extract more detailed info by looking at the page of each individual document but
+            // for the moment, the cost/benefit ratio is good enough going by the main catalog page.
+
             if (Directory.Exists(OutputDirectory))
                 Directory.Delete(OutputDirectory, true);
             Directory.CreateDirectory(OutputDirectory);
@@ -289,6 +292,8 @@ namespace ScrapeIsoDocuments
                     throw new Exception("Loaded no entries."); // Sanity check.
 
                 // Try cross-reference entries so that superseded documents reference the new ones.
+                // This is somewhat heuristics-based and the website actually has explicit references but "good enough" for now.
+                // Consider parsing the explicit references on each document's individual page if you want to make it more proper.
                 var publishedDocuments = entries.Where(pair => !pair.Value.IsSuperseded && !pair.Value.IsUnderDevelopment && !pair.Value.IsRetired);
                 var notPublishedDocuments = entries.Except(publishedDocuments);
 
