@@ -78,6 +78,8 @@ namespace ScrapeScteDocuments
 
             var entries = new Dictionary<string, Entry>();
 
+            var documentIndex = 1;
+
             foreach (var pageUrl in CatalogPagesToScrape)
             {
                 var page = new HtmlDocument();
@@ -97,8 +99,6 @@ namespace ScrapeScteDocuments
                 var documents = dataTable.SelectNodes("tbody/tr");
 
                 Console.WriteLine($"Found {documents.Count} documents.");
-
-                var documentIndex = 1;
 
                 // First 2 are header/spacer rows. Last one is footer row.
                 foreach (var document in documents.Skip(2).Take(documents.Count - 3))
