@@ -169,7 +169,8 @@ namespace ScrapeScteDocuments
                         // We use the same sorting as on the website.
                         SortIndex = documentIndex++,
 
-                        Url = absoluteUrl.ToString(),
+                        // SpecRef does not recognize space, wants %20 instead.
+                        Url = absoluteUrl.ToString().Replace(" ", "%20"),
                         Title = $"{title}: {summary}",
                         RawDate = rawDate
                     };
