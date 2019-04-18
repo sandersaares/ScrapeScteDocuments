@@ -124,10 +124,6 @@ namespace ScrapeScteDocuments
                         title = title.Replace("  ", " ");
 
                     var rawUrl = link.GetAttributeValue("href", null);
-
-                    // Sometimes the URL is bad.
-                    rawUrl = rawUrl.Replace(":/www", "://www");
-
                     var relativeUrl = new Uri(rawUrl, UriKind.RelativeOrAbsolute);
                     var absoluteUrl = new Uri(new Uri(pageUrl), relativeUrl);
 
