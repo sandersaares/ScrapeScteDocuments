@@ -1,7 +1,7 @@
-﻿using HtmlAgilityPack;
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
 using Polly;
 using Polly.Retry;
+using ScrapeScteDocuments.InputModel;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -9,6 +9,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Xml;
 
 namespace ScrapeScteDocuments
 {
@@ -22,12 +23,7 @@ namespace ScrapeScteDocuments
 
         public const string OutFile = "scte.json";
 
-        public static string[] CatalogPagesToScrape = new[]
-        {
-            "https://www.scte.org/SCTE/Standards/Download_SCTE_Standards.aspx",
-            "http://www.scte.org/SCTE/Standards/SCTE_Standards_Page_2.aspx",
-            "http://www.scte.org/SCTE/Standards/SCTE_Standards_Page_3.aspx"
-        };
+        public static string ScrapeUrl = "https://api.scte-website-cms.com/api/v1/standards/category/non-public";
 
         // Retry if something goes wrong (it shouldn't but the web is the web).
         private static RetryPolicy<string> ScrapePolicy = Policy<string>.Handle<Exception>().Retry(3);
@@ -39,6 +35,9 @@ namespace ScrapeScteDocuments
             public string Url { get; set; }
             public string Title { get; set; }
             public string RawDate { get; set; }
+            public string Status { get; set; }
+
+            public string[] Aliases { get; set; }
         }
 
         // Example document names:
@@ -53,17 +52,37 @@ namespace ScrapeScteDocuments
         // 1 is base ID, 2 is year
         private static readonly Regex ExtractIdComponentsRegex = new Regex(@"SCTE ([0-9-]+?)(?: |-)(\d{4})", RegexOptions.Compiled);
 
-        public static (string id, string rawDate) ParseTitle(string title)
+        public static (string id, string rawDate, string[] aliases) ParseStandardNumber(string standardNumber)
         {
-            var match = ExtractIdComponentsRegex.Match(title);
+            var match = ExtractIdComponentsRegex.Match(standardNumber);
 
             if (!match.Success)
-                throw new Exception("Failed to parse document title: " + title);
+                throw new Exception("Failed to parse standard number: " + standardNumber);
 
             var baseName = match.Groups[1].Value;
             var rawDate = match.Groups[2].Value;
 
-            return ("scte" + baseName, rawDate);
+            // It appears that standard numbers of the format 24-02 were renamed with the SCTE website update.
+            // Now they are listed as 24-2 and cause broken references. Let's add aliases to keep the old 24-02 working.
+            // Aaaaand sometimes it's the opposite, with 135-3 becoming 135-03! Add this direction of alias, too.
+            var aliases = new List<string>();
+            var lastDashIndex = baseName.LastIndexOf('-');
+
+            if (lastDashIndex != -1)
+            {
+                var prefinalPart = baseName.Substring(0, lastDashIndex + 1);
+                var finalPart = baseName.Substring(lastDashIndex + 1);
+
+                // If it is -1, make an alias -01
+                if (finalPart.Length == 1)
+                    aliases.Add("scte" + prefinalPart + "0" + finalPart);
+
+                // If it is -01, make an alias -1
+                if (finalPart.Length == 2 && finalPart[0] == '0')
+                    aliases.Add("scte" + prefinalPart + finalPart[1]);
+            }
+
+            return ("scte" + baseName, rawDate, aliases.ToArray());
         }
 
         private static void Main(string[] args)
@@ -80,99 +99,58 @@ namespace ScrapeScteDocuments
 
             var documentIndex = 1;
 
-            foreach (var pageUrl in CatalogPagesToScrape)
+            Console.WriteLine($"Loading catalog page: {ScrapeUrl}");
+
+            var pageJson = ScrapePolicy.Execute(() => client.GetStringAsync(ScrapeUrl).Result);
+
+            var categories = JsonConvert.DeserializeObject<Category[]>(pageJson);
+
+            var documents = categories.SelectMany(c => c.Posts).ToArray();
+
+            Console.WriteLine($"Found {documents.Length} documents.");
+
+            var knownUrls = new List<string>();
+
+            foreach (var document in documents)
             {
-                var page = new HtmlDocument();
+                var standardNumber = document.Meta.First(m => m.Key == "standardNumber").Value;
+                (var id, var rawDate, var aliases) = ParseStandardNumber(standardNumber);
+                var absoluteUrl = document.Meta.First(m => m.Key == "PDF").Value;
+                var title = document.Title;
 
-                Console.WriteLine($"Loading catalog page: {pageUrl}");
+                if (string.IsNullOrWhiteSpace(title))
+                    throw new Exception("Empty title for " + standardNumber);
 
-                var pageHtml = ScrapePolicy.Execute(() => client.GetStringAsync(pageUrl).Result);
-                page.LoadHtml(pageHtml);
+                if (string.IsNullOrWhiteSpace(absoluteUrl))
+                    throw new Exception("Empty URL for " + standardNumber);
 
-                // Page 1.
-                var dataTable = page.DocumentNode.SelectSingleNode("//div[@class='iMIS-WebPart']/div/div/html/body/table");
-
-                // Pages 2 and 3.
-                if (dataTable == null)
-                    dataTable = page.DocumentNode.SelectSingleNode("//div[@class='iMIS-WebPart']/div/div/table");
-
-                var documents = dataTable.SelectNodes("tbody/tr");
-
-                Console.WriteLine($"Found {documents.Count} documents.");
-
-                // First 2 are header/spacer rows. Last one is footer row.
-                foreach (var document in documents.Skip(2).Take(documents.Count - 3))
+                if (knownUrls.Contains(absoluteUrl))
                 {
-                    var link = document.SelectSingleNode("td[1]//a");
-
-                    if (link == null)
-                    {
-                        if (document.InnerText.Contains("Please note:"))
-                            continue; // Some rows are editorial notes. Ignore.
-
-                        if (document.InnerText.Contains("ANSI/SCTE 141 2007"))
-                            continue; // They have deliberately omitted link as this document was replaced by another. Okay, whatever.
-
-                        throw new Exception("Unable to find document link in fragment: " + document.InnerText);
-                    }
-
-                    // Sometimes there is garbage spacing - remove it.
-                    var title = HtmlEntity.DeEntitize(link.InnerText).Trim();
-
-                    // Sometimes there are just a bunch of repeated spaces.
-                    while (title.Contains("  "))
-                        title = title.Replace("  ", " ");
-
-                    var rawUrl = link.GetAttributeValue("href", null);
-                    var relativeUrl = new Uri(rawUrl, UriKind.RelativeOrAbsolute);
-                    var absoluteUrl = new Uri(new Uri(pageUrl), relativeUrl);
-
-                    // Some are in <span>, some are not. Prefer plaintext if available, fallback to span.
-                    // Some are in <div>, fallback to that if span gives nothing.
-                    // Some are in <p>. Depends on the day/moon/rainbow.
-                    var summaryElement = document.SelectSingleNode("td[2]/text()[1]");
-
-                    if (summaryElement == null || string.IsNullOrWhiteSpace(summaryElement.InnerText))
-                        summaryElement = document.SelectSingleNode("td[2]/span/text()[1]");
-
-                    if (summaryElement == null || string.IsNullOrWhiteSpace(summaryElement.InnerText))
-                        summaryElement = document.SelectSingleNode("td[2]/div/text()[1]");
-
-                    if (summaryElement == null || string.IsNullOrWhiteSpace(summaryElement.InnerText))
-                        summaryElement = document.SelectSingleNode("td[2]/p/text()[1]");
-
-                    if (summaryElement == null)
-                        throw new Exception("Unable to find summary text for " + title);
-
-                    // Sometimes there is garbage spacing - remove it.
-                    var summary = HtmlEntity.DeEntitize(summaryElement.InnerText).Trim();
-
-                    // Sometimes there is newlines.
-                    summary = summary.Trim()
-                        .Replace('\r', ' ')
-                        .Replace('\n', ' ');
-
-                    // Sometimes there are many spaces.
-                    while (summary.Contains("  "))
-                        summary = summary.Replace("  ", " ");
-
-                    (var id, var rawDate) = ParseTitle(title);
-
-                    Console.WriteLine($"{title} is titled \"{summary}\", available at {absoluteUrl} and will get the ID {id}");
-
-                    var entry = new Entry
-                    {
-                        // We use the same sorting as on the website.
-                        SortIndex = documentIndex++,
-
-                        // SpecRef does not recognize space, wants %20 instead.
-                        Url = absoluteUrl.ToString().Replace(" ", "%20"),
-                        Title = $"{title}: {summary}",
-                        RawDate = rawDate
-                    };
-
-                    entries[id] = entry;
+                    // SCTE catalog seems to have some errors... ??? Whatever, just skip for now.
+                    // 231 and 232 are in conflict at time of writing (both use 231 URL).
+                    Console.WriteLine($"Skipping {id} because it reuses a URL already used for another document: {absoluteUrl}");
+                    continue;
                 }
+
+                knownUrls.Add(absoluteUrl);
+
+                Console.WriteLine($"{standardNumber} is titled \"{title}\", available at {absoluteUrl} and will get the ID {id}");
+
+                if (aliases.Length != 0)
+                    Console.WriteLine($"It is also called {string.Join(", ", aliases)}");
+
+                var entry = new Entry
+                {
+                    // We use the same sorting as on the website.
+                    SortIndex = documentIndex++,
+
+                    Url = absoluteUrl,
+                    Title = $"{standardNumber}: {title}",
+                    Status = document.Status,
+                    Aliases = aliases
+                };
+
+                entries[id] = entry;
             }
 
             if (entries.Count == 0)
@@ -188,8 +166,17 @@ namespace ScrapeScteDocuments
                     href = pair.Value.Url,
                     title = pair.Value.Title,
                     publisher = "SCTE",
-                    rawDate = pair.Value.RawDate
+                    rawDate = pair.Value.RawDate,
+                    status = pair.Value.Status
                 };
+
+                foreach (var alias in pair.Value.Aliases)
+                {
+                    json[alias] = new
+                    {
+                        aliasOf = pair.Key
+                    };
+                }
             }
 
             var outputFilePath = Path.Combine(OutputDirectory, OutFile);
@@ -198,7 +185,7 @@ namespace ScrapeScteDocuments
 
         private static readonly JsonSerializerSettings JsonSettings = new JsonSerializerSettings
         {
-            Formatting = Formatting.Indented,
+            Formatting = Newtonsoft.Json.Formatting.Indented,
             DefaultValueHandling = DefaultValueHandling.Ignore
         };
 
